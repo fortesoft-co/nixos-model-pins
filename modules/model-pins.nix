@@ -79,19 +79,21 @@ let
   # ── manifest composition ──
   # Source-agnostic: the constructors in ./sources.nix already resolved
   # each entry to urls + provenance; this only shapes the manifest row.
-  entryOf = key: dl: {
+  entryOf = icfg: key: dl: {
     id = key;
     inherit (dl)
       kind
       dest
       sha256
-      tokenFile
       unzipInto
       name
       provenance
       ;
+    # the entry's own token, else the instance default for its source
+    # (url entries have none); the runtime scopes it to first-party hosts
+    tokenFile = if dl.tokenFile != null then dl.tokenFile else icfg.tokenFiles.${dl.transport.type} or null;
     urls = lib.unique (lib.filter (u: u != "") dl.urls);
-    # manifest compat (rule 6): the mirrors after the source's own URL
+    # manifest compat (rule 6): every URL after the primary one
     fallbackUrls = lib.drop 1 dl.urls;
     # inPlace: fetched straight to the dest, no store placement. The
     # manifest key stays "legacy" (store-law compat, rule 6).
@@ -108,7 +110,7 @@ let
       prefix = icfg.unitPrefix;
       group = if icfg.group != null then icfg.group else icfg.user;
       toolPath = toolPathFor icfg;
-      entries = lib.mapAttrsToList entryOf icfg.downloads;
+      entries = lib.mapAttrsToList (entryOf icfg) icfg.downloads;
       pinManifest = pkgs.writeText "${prefix}-pins.json" (builtins.toJSON entries);
 
       destsList = map (e: e.dest) entries;

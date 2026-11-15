@@ -14,10 +14,11 @@
 #   hfFetch       `hf download` (huggingface_hub + hf-xet: Xet chunked
 #                 transfers, revision pinning, resume); curl on the
 #                 resolve URL only if hf fails
-#   civitaiFetch  the official civitai CLI when a tokenFile is set (its
-#                 downloads require auth), pinned with --version; without
-#                 a token, or if the CLI fails, curl on the public
-#                 download endpoint (the CLI doesn't resume; curl does)
+#   civitaiFetch  the official civitai CLI when a token is set (its
+#                 downloads require auth), pinned with --version, against
+#                 civitai.red; without a token, or if the CLI fails, curl
+#                 on the download endpoint, civitai.red then civitai.com
+#                 (the CLI doesn't resume; curl does)
 #   urlFetch      curl
 # Whatever the route, the bytes must hash to sha256 before placement.
 #
@@ -31,8 +32,10 @@
 # Shared arguments (every constructor):
 #   sha256        the pin: expected sha256 of the bytes (64 hex)
 #   dest          dataDir-relative link destination
-#   tokenFile     file holding a bearer token, read at download time
-#   fallbackUrls  mirrors tried in order after the source's own URL
+#   tokenFile     file holding a bearer token, read at download time;
+#                 defaults to the instance's tokenFiles.<source>. Sent
+#                 only to the source's own hosts, never to mirrors
+#   fallbackUrls  mirrors tried in order after the source's own URLs
 #   inPlace, unzipInto, kind, name   non-store placement (see
 #                 modules/options.nix)
 let
@@ -56,6 +59,7 @@ let
       sha256,
       dest,
       tokenFile ? null,
+      sourceUrls ? [ ],
       fallbackUrls ? [ ],
       inPlace ? false,
       unzipInto ? null,
@@ -63,7 +67,7 @@ let
       name ? null,
     }:
     {
-      urls = [ url ] ++ fallbackUrls;
+      urls = [ url ] ++ sourceUrls ++ fallbackUrls;
       transport = compact transport;
       provenance = compact provenance;
       inherit
@@ -108,8 +112,9 @@ in
       }
     );
 
-  # Civitai model version via the download endpoint
-  #   https://civitai.com/api/download/models/<versionId>[?fileId=<id>]
+  # Civitai model version via the download endpoint, on civitai.red
+  # (which serves everything civitai.com does) and then civitai.com:
+  #   https://civitai.{red,com}/api/download/models/<versionId>[?fileId=<id>]
   # Always pinned to versionId: the CLI downloads exactly that version
   # (never the model card's current default).
   #   fileId (optional)   a specific member of a multi-file version;
@@ -130,6 +135,10 @@ in
     let
       # int or string accepted — normalized so urls and manifests see str
       version = toString versionId;
+      endpoint =
+        host:
+        "https://${host}/api/download/models/${version}"
+        + (if fileId != null then "?fileId=${toString fileId}" else "");
     in
     entry (
       removeAttrs args [
@@ -139,9 +148,8 @@ in
         "modelId"
       ]
       // {
-        url =
-          "https://civitai.com/api/download/models/${version}"
-          + (if fileId != null then "?fileId=${toString fileId}" else "");
+        url = endpoint "civitai.red";
+        sourceUrls = [ (endpoint "civitai.com") ];
         transport = {
           type = "civitai";
           versionId = version;

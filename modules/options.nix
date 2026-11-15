@@ -5,6 +5,7 @@
 # Layout:
 #   cfg.model-pins.instances.<name>                 one pin root + pipeline
 #     dataDir user group unitPrefix                identity + placement
+#     tokenFiles                                   per-source tokens
 #     downloads.<id>                               the pin set (see below)
 #     enforce verifySchedule requiresMounts        policy + scheduling
 #     consumedBy workflowsDir jobs                 wiring + tuning
@@ -93,6 +94,25 @@
                   name; distinct per instance (unit names must not collide).
                 '';
               };
+              tokenFiles = lib.mkOption {
+                type = lib.types.submodule {
+                  options = lib.genAttrs [ "huggingface" "civitai" ] (
+                    source:
+                    lib.mkOption {
+                      type = lib.types.nullOr lib.types.str;
+                      default = null;
+                      description = "Token file for ${source} entries without their own tokenFile.";
+                    }
+                  );
+                };
+                default = { };
+                description = ''
+                  Per-source token files, read at fetch time (never stored
+                  in the nix closure): hfFetch entries use huggingface,
+                  civitaiFetch entries use civitai, unless the entry sets
+                  its own tokenFile. urlFetch entries have no default.
+                '';
+              };
               downloads = lib.mkOption {
                 type = lib.types.attrsOf (
                   lib.types.submodule {
@@ -163,7 +183,9 @@
                         description = ''
                           File whose contents are read at fetch time (never
                           stored in the nix closure) and sent as a bearer
-                          token (gated Hugging Face repos, Civitai).
+                          token — only to the source's own hosts, never to
+                          mirrors. null: the instance's tokenFiles default
+                          for this entry's source.
                         '';
                       };
                       unzipInto = lib.mkOption {

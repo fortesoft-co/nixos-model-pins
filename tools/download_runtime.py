@@ -60,7 +60,8 @@ manifest row's `transport` picks the tool, and every route ends at the
 same sha gate before anything is staged for the seal.
     huggingface  `hf download` (Xet transfers, revision pinning, resume)
     civitai      the civitai CLI when the row has a token (CLI downloads
-                 require auth); otherwise straight to curl
+                 require auth), against civitai.red; otherwise straight
+                 to curl
     url          curl (also rows with no transport key)
 A platform tool that fails or is absent falls through to resumable curl
 over the row's `urls`. Hashing is in-process. Under systemd the units
@@ -70,7 +71,10 @@ runs resolve tools from the operator's PATH.
 
 Tokens never touch argv (world-readable via /proc/<pid>/cmdline): curl
 gets its header through a config on stdin, hf/civitai through their
-token environment variables.
+token environment variables. A token only goes to the source's own
+hosts: for huggingface/civitai rows, https URLs on FIRST_PARTY_HOSTS;
+for url rows, the primary URL only. Mirrors never receive it (and curl
+drops the header on cross-host redirects, e.g. to signed storage).
 """
 
 import argparse
@@ -163,6 +167,23 @@ def sha256_of(path):
         return None
 
 
+# Hosts a transport's token may be sent to (the host itself or any
+# subdomain, https only). Everything else in a row's urls is a mirror.
+FIRST_PARTY_HOSTS = {
+    "huggingface": ("huggingface.co", "hf.co"),
+    "civitai": ("civitai.com", "civitai.red"),
+}
+
+# The civitai CLI's API/download host (CIVITAI_BASE_URL): civitai.red
+# serves everything civitai.com does, plus versions only it has.
+CIVITAI_BASE_URL = "https://civitai.red"
+
+
+def host_in(host, domains):
+    host = (host or "").lower().rstrip(".")
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 @dataclasses.dataclass
 class Pin:
     """One manifest row — the nix definition, resolved by the model-pins module."""
@@ -228,6 +249,19 @@ class Pin:
         except OSError as e:
             warn(f"token unreadable for {self.id}: {e} — fetching without")
             return None
+
+    def token_for(self, url):
+        """The token if <url> may receive it, else None (see the module
+        docstring: first-party hosts only, mirrors never)."""
+        tok = self.token
+        if not tok:
+            return None
+        domains = FIRST_PARTY_HOSTS.get(self.transport.get("type"))
+        if domains is not None:
+            u = urllib.parse.urlsplit(url)
+            return tok if u.scheme == "https" and host_in(u.hostname, domains) else None
+        urls = self.raw.get("urls") or []
+        return tok if urls and url == urls[0] else None
 
 
 def load_pins(manifest, only):
@@ -533,6 +567,7 @@ def fetch_civitai(pin, t, staging, part):
         cmd += ["--file", str(select)]
     env = tool_env(
         CIVITAI_TOKEN=tok,
+        CIVITAI_BASE_URL=CIVITAI_BASE_URL,
         CIVITAI_NO_UPDATE_CHECK="1",
         XDG_CONFIG_HOME=os.path.join(staging, ".civitai-config"),
     )
@@ -597,7 +632,9 @@ def fetch_curl(curl_tool, pin, part, urls=None):
         note(f"  fetching: {url}")
         cmd = [curl_tool, "-L", "--fail", "--retry", "5", "--connect-timeout", "30", "-C", "-"]
         stdin_cfg = None
-        tok = pin.token
+        tok = pin.token_for(url)
+        if pin.token and not tok:
+            note(f"  {pin.id}: not a first-party host — fetching without the token")
         if tok:
             # header via a stdin config, never argv (/proc/<pid>/cmdline
             # is world-readable)

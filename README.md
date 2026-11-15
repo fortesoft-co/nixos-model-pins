@@ -18,7 +18,8 @@ module keeps them **out of the Nix store**, while staying declarative:
 - **The right downloader, automatically:** Hugging Face files come
   down with `hf download` (Xet transfers, revision pinning, resume).
   Civitai files use the official civitai CLI when you give a token, and
-  the public download endpoint otherwise. Plain URLs use curl. If a
+  the public download endpoint otherwise, on civitai.red, then
+  civitai.com. Plain URLs use curl. If a
   platform tool fails, the download falls back to resumable curl. You
   never pick a tool: the module ships them, and only adds them to
   instances that need them.
@@ -33,7 +34,9 @@ module keeps them **out of the Nix store**, while staying declarative:
 - **Secrets stay yours:** tokens are read from a file you provide at
   download time. They never enter the Nix store and never appear on a
   process command line (curl gets them on stdin, `hf` and `civitai`
-  through their token environment variables).
+  through their token environment variables). One token file per
+  source covers the whole instance, and a token is only ever sent to
+  its source's own hosts, never to mirrors.
 
 ## Usage
 
@@ -50,6 +53,10 @@ inputs.model-pins.url = "github:fortesoft-co/nixos-model-pins";
     dataDir = "/srv/example-models";   # pin root: store + link trees
     user = "example";                  # runs downloads, owns link dirs
     consumedBy = [ "example.service" ];  # starts after its files are placed
+    tokenFiles = {                     # optional; per entry: tokenFile
+      huggingface = "/run/secrets/<hf-token>";       # gated repos
+      civitai = "/run/secrets/<civitai-token>";
+    };
     downloads = {
       main = model-pins.lib.hfFetch {
         repo = "<org>/<repo>";
@@ -57,7 +64,6 @@ inputs.model-pins.url = "github:fortesoft-co/nixos-model-pins";
         file = "<file>.gguf";
         sha256 = "<64-hex>";
         dest = "llm/<file>.gguf";      # relative to dataDir
-        # tokenFile = "/run/secrets/<token>";  # gated repos
       };
       # also: model-pins.lib.civitaiFetch { versionId; sha256; dest; ... }
       #       model-pins.lib.urlFetch     { url; sha256; dest; ... }

@@ -152,6 +152,57 @@ grep -qx "Bearer $tok" "$work/seen-auth" || fail "server did not receive the bea
 ! grep -q "$tok" "$work/curl-argv" || fail "token leaked onto curl argv"
 ok "token: bearer header delivered, absent from argv"
 
+# ── 6b. token scoping: a mirror never receives the token ───────────────
+# Primary URL dead, mirror = the test server: the fetch succeeds through
+# the mirror, which must see no Authorization header.
+: > "$work/seen-auth"
+python3 - "$work" "$gsha" "$port" <<'PYEOF'
+import json, os, sys
+work, sha, port = sys.argv[1], sys.argv[2], sys.argv[3]
+row = {"id": "mirrored", "kind": None, "dest": "llm/mirrored.gguf", "sha256": sha,
+       "tokenFile": os.path.join(work, "token"), "unzipInto": None,
+       "name": None, "legacy": False, "provenance": {},
+       "urls": ["file://" + os.path.join(work, "gone.gguf"),
+                f"http://127.0.0.1:{port}/gated.gguf"]}
+row["fallbackUrls"] = row["urls"][1:]
+with open(os.path.join(work, "m6.json"), "w") as f:
+    json.dump([row], f)
+PYEOF
+python3 "$rt" ensure --manifest "$work/m6.json" --dataDir "$dd" --jobs 1 >"$work/log8b" 2>&1
+grep -q "promote(fetch) mirrored" "$work/log8b" || fail "mirror fetch did not stage"
+[ -s "$work/seen-auth" ] || fail "mirror was not contacted"
+! grep -q "Bearer" "$work/seen-auth" || fail "token leaked to a mirror"
+ok "token scoping: mirror fetched without the token"
+
+# ── 6c. token scoping rules: first-party https hosts only ──────────────
+python3 - "$rt" "$work/token" <<'PYEOF' || fail "token scoping rules"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("rt", sys.argv[1])
+rt = importlib.util.module_from_spec(spec); spec.loader.exec_module(rt)
+tf = sys.argv[2]
+def pin(t, urls):
+    return rt.Pin({"id": "x", "tokenFile": tf, "urls": urls, "transport": {"type": t}})
+cv = pin("civitai", [])
+hf = pin("huggingface", [])
+cases = [
+    (cv, "https://civitai.red/api/download/models/1", True),
+    (cv, "https://civitai.com/api/download/models/1", True),
+    (cv, "https://www.civitai.com/x", True),
+    (cv, "http://civitai.com/x", False),
+    (cv, "https://evilcivitai.red/x", False),
+    (cv, "https://civitai.red.example.net/x", False),
+    (cv, "https://mirror.example.net/x", False),
+    (hf, "https://huggingface.co/r/resolve/0/f", True),
+    (hf, "https://civitai.com/x", False),
+    (pin("url", ["https://a.example/f", "https://b.example/f"]), "https://a.example/f", True),
+    (pin("url", ["https://a.example/f", "https://b.example/f"]), "https://b.example/f", False),
+]
+bad = [(p.transport["type"], u) for p, u, want in cases if (p.token_for(u) is not None) != want]
+if bad:
+    print("wrong token decision:", bad); sys.exit(1)
+PYEOF
+ok "token scoping rules: first-party https only, primary-only for url rows"
+
 # ── 7. unzipInto: extract, detect drift, re-extract ─────────────────────
 python3 - "$work" <<'PYEOF'
 import os, sys, zipfile
@@ -203,6 +254,7 @@ cat > "$work/tools/civitai" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_LOG.civitai-argv"
 printf 'CIVITAI_TOKEN=%s\n' "${CIVITAI_TOKEN:-}" >> "$STUB_LOG.civitai-env"
+printf 'CIVITAI_BASE_URL=%s\n' "${CIVITAI_BASE_URL:-}" >> "$STUB_LOG.civitai-env"
 [ "${STUB_MODE:-ok}" = fail ] && exit 1
 out=
 while [ $# -gt 0 ]; do [ "$1" = --out ] && out=$2; shift; done
@@ -255,7 +307,8 @@ grep -q -- "download --no-update-check --version 42 --out .* --force --file 7" "
   || fail "civitai CLI not pinned with --version / --file"
 ! grep -q "$tok" "$work/stub-cv.civitai-argv" || fail "token leaked onto civitai argv"
 grep -qx "CIVITAI_TOKEN=$tok" "$work/stub-cv.civitai-env" || fail "civitai did not get CIVITAI_TOKEN"
-ok "civitai: token -> CLI pinned to the version, token via env only"
+grep -qx "CIVITAI_BASE_URL=https://civitai.red" "$work/stub-cv.civitai-env" || fail "civitai CLI not pointed at civitai.red"
+ok "civitai: token -> CLI on civitai.red pinned to the version, token via env only"
 
 transport_case cvanon "$cv_t" "$live" 0
 placed cvanon || fail "tokenless civitai did not download over curl"
