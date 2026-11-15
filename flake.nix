@@ -11,14 +11,23 @@
     {
       lib = import ./modules/sources.nix;
       nixosModules = {
-        model-pins =
-          { lib, pkgs, ... }:
-          {
-            imports = [ ./modules/model-pins.nix ];
-            cfg.model-pins.civitaiCli = lib.mkDefault (
-              civitai-cli.packages.${pkgs.stdenv.hostPlatform.system}.default or null
-            );
-          };
+        # The key makes the module system import this once, however many
+        # consumers (nixos-comfyui, nixos-llm, …) bring it into one system.
+        # Have them all follow one nixos-model-pins input.
+        model-pins = {
+          key = "nixos-model-pins";
+          imports = [
+            ./modules/model-pins.nix
+            (
+              { lib, pkgs, ... }:
+              {
+                cfg.model-pins.civitaiCli = lib.mkDefault (
+                  civitai-cli.packages.${pkgs.stdenv.hostPlatform.system}.default or null
+                );
+              }
+            )
+          ];
+        };
         default = self.nixosModules.model-pins;
       };
     };
